@@ -23,7 +23,7 @@ class maxiEvent {
 
 const MIN_TIME_PER_ACTION_MS = 300 * 1000 //min 5 minutes for action. probably only needs 1-2, but safety first?
 
-const VERSION = "v1.01-m"
+const VERSION = "v1.1-m"
 
 export async function main(event: maxiEvent, context: any): Promise<Object> {
     console.log("vault maxi " + VERSION)
@@ -50,6 +50,7 @@ export async function main(event: maxiEvent, context: any): Promise<Object> {
 
             const program = new VaultMaxiProgram(store, new WalletSetup(MainNet, settings))
             await program.init()
+            await program.checklmToken(telegram)
 
             if (event) {
                 if (event.checkSetup) {
@@ -66,12 +67,11 @@ export async function main(event: maxiEvent, context: any): Promise<Object> {
             let vault: LoanVaultActive = await program.getVault() as LoanVaultActive //already checked before if all is fine
 
             if (vault.state == LoanVaultState.FROZEN) {
-                // TODO: activate this once FCR is active
-                //await program.removeExposure(vault, telegram,true)
+                await program.removeExposure(vault, telegram,true)
                 const message = "vault is frozen. trying again later "
                 await telegram.send(message)
                 console.warn(message)
-                return false
+                return { statusCode: 200 }
             }
 
             //TODO: move that block to function in programm
@@ -158,18 +158,25 @@ export async function main(event: maxiEvent, context: any): Promise<Object> {
                         vault = await program.getVault() as LoanVaultActive
                     }
                 }
-        }
+            }
             console.log("got "+(context.getRemainingTimeInMillis()/1000).toFixed(1)+" sec left after reinvest")
             if(exposureChanged){
                 vault= await program.getVault() as LoanVaultActive 
             }
+            // Check for Poolswitch TODO
             if(context.getRemainingTimeInMillis() > MIN_TIME_PER_ACTION_MS) {// enough time left -> continue
                 const usedCollateralRatio = BigNumber.min(+vault.collateralRatio, nextCollateralRatio(vault))
                 if (+vault.collateralValue < 10) {
                     const message = "less than 10 dollar in the vault. can't work like that"
                     await telegram.send(message)
                     console.error(message)
-                } else if (usedCollateralRatio.lt(0) || usedCollateralRatio.gt(settings.maxCollateralRatio)) {
+                }
+                else if(await program.checkPoolSwitch() === true){
+                    exposureChanged = await program.switchPool(vault, telegram)
+                    vault = await program.getVault() as LoanVaultActive
+                    result = true
+                } 
+                if (usedCollateralRatio.lt(0) || usedCollateralRatio.gt(settings.maxCollateralRatio)) {
                     result = await program.increaseExposure(vault, telegram)
                     exposureChanged = true
                 }

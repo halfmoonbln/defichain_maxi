@@ -1,4 +1,5 @@
 import SSM from 'aws-sdk/clients/ssm'
+import { PoolStateConverter, PoolStateInformation } from './pool-state-converter'
 import { ProgramStateConverter, ProgramStateInformation } from './program-state-converter'
 import { IStore, StoredSettings } from './store'
 
@@ -11,6 +12,17 @@ export class StoreAWS implements IStore{
         this.ssm = new SSM()
         this.settings = new StoredSettings()
     }
+    
+    async updateToPoolState(information: PoolStateInformation): Promise<void> {
+        const key = StoreKey.PoolState.replace("-maxi", "-maxi" + this.settings.paramPostFix)
+        const state = {
+            Name: key,
+            Value: PoolStateConverter.toValue(information),
+            Overwrite: true,
+            Type: 'String'
+        }
+        await this.ssm.putParameter(state).promise()
+    }
 
     async updateToState(information: ProgramStateInformation): Promise<void> {
         const key = StoreKey.State.replace("-maxi", "-maxi" + this.settings.paramPostFix)
@@ -21,6 +33,17 @@ export class StoreAWS implements IStore{
             Type: 'String'
         }
         await this.ssm.putParameter(state).promise()
+    }
+
+    async updateLMToken(information: string): Promise<void> {
+        const key = StoreKey.LMToken.replace("-maxi", "-maxi" + this.settings.paramPostFix)
+        const LMToken = {
+            Name: key,
+            Value: information,
+            Overwrite: true,
+            Type: 'String'
+        }
+        await this.ssm.putParameter(LMToken).promise()
     }
 
     async fetchSettings(): Promise<StoredSettings> {
@@ -38,8 +61,11 @@ export class StoreAWS implements IStore{
         let ReinvestThreshold = StoreKey.ReinvestThreshold.replace("-maxi", "-maxi" + storePostfix)
         let LMTokenKey = StoreKey.LMToken.replace("-maxi", "-maxi" + storePostfix)
         let StateKey = StoreKey.State.replace("-maxi", "-maxi" + storePostfix)
+        let PoolStateKey = StoreKey.PoolState.replace("-maxi", "-maxi" + storePostfix)
         let MoveToAddress = StoreKey.MoveToAddress.replace("-maxi","-maxi" + storePostfix)
         let MoveToTreshold = StoreKey.MoveToTreshold.replace("-maxi", "-maxi" + storePostfix)
+        let SwitchPoolInBlocks = StoreKey.SwitchPoolInBlocks.replace("-maxi", "-maxi" + storePostfix)
+        let Failsafe = StoreKey.Failsafe.replace("-maxi", "-maxi" + storePostfix)
 
         let keys = [
             StoreKey.TelegramNotificationChatId,
@@ -52,9 +78,12 @@ export class StoreAWS implements IStore{
             MaxCollateralRatioKey,
             LMTokenKey,
             StateKey,
+            PoolStateKey,
             ReinvestThreshold,
             MoveToAddress,
-            MoveToTreshold
+            MoveToTreshold,
+            SwitchPoolInBlocks,
+            Failsafe
         ]
 
         //store only allows to get 10 parameters per request
@@ -77,7 +106,15 @@ export class StoreAWS implements IStore{
                 StateKey,
                 ReinvestThreshold,
                 MoveToAddress,
-                MoveToTreshold
+                MoveToTreshold,
+                SwitchPoolInBlocks
+            ]
+        }).promise()).Parameters ?? [])
+
+        parameters = parameters.concat((await this.ssm.getParameters({
+            Names: [
+                Failsafe,
+                PoolStateKey
             ]
         }).promise()).Parameters ?? [])
 
@@ -102,8 +139,11 @@ export class StoreAWS implements IStore{
         this.settings.LMToken = this.getValue(LMTokenKey, parameters)
         this.settings.reinvestThreshold = this.getNumberValue(ReinvestThreshold, parameters)
         this.settings.stateInformation = ProgramStateConverter.fromValue(this.getValue(StateKey, parameters))
+        this.settings.poolInformation = PoolStateConverter.fromValue(this.getValue(PoolStateKey, parameters))
         this.settings.moveToAddress = this.getValue(MoveToAddress, parameters)
         this.settings.moveToTreshold = this.getNumberValue(MoveToTreshold, parameters)
+        this.settings.switchPoolInBlocks = this.getNumberValue(SwitchPoolInBlocks, parameters)
+        this.settings.failsafe = this.getNumberValue(Failsafe, parameters)
 
         let seedList = decryptedSeed?.Parameter?.Value?.replace(/[ ,]+/g, " ")
         this.settings.seed = seedList?.trim().split(' ') ?? []
@@ -138,6 +178,10 @@ enum StoreKey {
     LMToken = '/defichain-maxi/settings/lm-token',
     ReinvestThreshold = '/defichain-maxi/settings/reinvest',
     State = '/defichain-maxi/state',
+    PoolState = '/defichain-maxi/poolstate',
     MoveToTreshold = '/defichain-maxi/settings/move-to-treshold',
-    MoveToAddress = '/defichain-maxi/settings/move-to-address'
+    MoveToAddress = '/defichain-maxi/settings/move-to-address',
+    SwitchPoolInBlocks = '/defichain-maxi/settings/switch-pool-in-blocks',
+    Failsafe = '/defichain-maxi/settings/failsafe'
+    
 }

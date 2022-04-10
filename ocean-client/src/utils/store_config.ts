@@ -1,6 +1,7 @@
 import { ProgramStateConverter, ProgramStateInformation } from './program-state-converter'
 import { IStore, StoredSettings } from './store'
 import fs from 'fs'
+import { PoolStateConverter, PoolStateInformation } from './pool-state-converter';
 
 // handle Parameter in local config on Linux and Windows
 export class StoreConfig implements IStore {
@@ -9,6 +10,7 @@ export class StoreConfig implements IStore {
     private config: ConfigFile;
     private configpath: string;
     private statefile: string;
+    private poolStatefile: string;
 
     constructor() {
         this.settings = new StoredSettings();
@@ -21,6 +23,7 @@ export class StoreConfig implements IStore {
         // create dir if not exist
         if (!fs.existsSync(this.configpath)) fs.mkdirSync(this.configpath);
         this.statefile = this.configpath + `/state${this.settings.paramPostFix}.txt`;
+        this.poolStatefile = this.configpath + `/poolstate${this.settings.paramPostFix}.txt`;
         this.config = this.GetConfig();
         if (!fs.existsSync(this.config.seedfile))
             throw new Error(`seedfile ${this.config.seedfile} not exists!`)
@@ -38,6 +41,16 @@ export class StoreConfig implements IStore {
 
     async updateToState(information: ProgramStateInformation): Promise<void> {
         fs.writeFileSync(this.statefile, ProgramStateConverter.toValue(information))
+    }
+
+    async updateToPoolState(information: PoolStateInformation): Promise<void> {
+        fs.writeFileSync(this.poolStatefile, PoolStateConverter.toValue(information))
+    }
+
+    async updateLMToken(information: string): Promise<void> {
+        var configfile = this.configpath + `/settings${this.settings.paramPostFix}.json`;
+        this.config.LMToken = information
+        fs.writeFileSync(configfile,JSON.stringify(this.config, null, 2));
     }
 
     // Get first line of text file. Or empty string on error.
@@ -61,7 +74,10 @@ export class StoreConfig implements IStore {
         this.settings.reinvestThreshold = this.config.reinvestThreshold;
         this.settings.moveToAddress = this.config.moveToAddress;
         this.settings.moveToTreshold = this.config.moveToTreshold;
+        this.settings.switchPoolInBlocks = this.config.switchPoolInBlocks;
+        this.settings.failsafe = this.config.failsafe;
         this.settings.stateInformation = ProgramStateConverter.fromValue(this.GetFirstLine(this.statefile));
+        this.settings.poolInformation = PoolStateConverter.fromValue(this.GetFirstLine(this.poolStatefile));
         let seedList = this.GetFirstLine(this.config.seedfile).replace(/[ ,]+/g, " ");
         this.settings.seed = seedList?.trim().split(' ') ?? [];
         return this.settings;
@@ -82,4 +98,6 @@ class ConfigFile {
     reinvestThreshold: number | undefined = 0
     moveToTreshold: number | undefined
     moveToAddress: string = ""
+    switchPoolInBlocks: number | undefined
+    failsafe: number | undefined
 }

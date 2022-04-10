@@ -19,7 +19,9 @@ export enum VaultMaxiProgramTransaction {
     TakeLoan = "takeloan",
     AddLiquidity = "addliquidity",
     Reinvest = "reinvest",
-    Withdraw = "withdraw"
+    Withdraw = "withdraw",
+    SwitchPool = "switchpool",
+    NoSwitch = "no-switch"
 }
 
 export class CheckedValues {
@@ -34,6 +36,8 @@ export class CheckedValues {
     reinvest: number | undefined
     moveToTreshold: number | undefined
     moveToAddress: string | undefined
+    switchPoolInBlocks: number | undefined
+    failsafe: number | undefined
 
     constructMessage(): string {
         return ""
@@ -45,13 +49,15 @@ export class CheckedValues {
             + ((this.reinvest && this.reinvest > 0) ? ("Will reinvest above " + this.reinvest + " DFI") : "Will not reinvest") + "\n"
             + (this.moveToAddress ? ("moveToAddress " + this.moveToAddress) : "no moveToAdress set") + "\n"
             + (this.moveToTreshold ? ("moveToTreshold " + this.moveToTreshold) : "no Treshold set") + "\n"
+            + (this.switchPoolInBlocks ? ("switchPoolInBlocks " + this.switchPoolInBlocks) : "no Blocks to Switch Pool set") + "\n"
+            + (this.failsafe ? ("failsafe-Modus is " + this.failsafe) : "no failsafe-Modus set") + "\n"
     }
 }
 
 export class VaultMaxiProgram extends CommonProgram {
 
     private readonly targetCollateral: number
-    private readonly lmPair: string
+    private lmPair: string
     private readonly keepWalletClean: boolean
 
     constructor(store: Store, walletSetup: WalletSetup) {
@@ -67,6 +73,23 @@ export class VaultMaxiProgram extends CommonProgram {
             transaction == VaultMaxiProgramTransaction.TakeLoan
     }
 
+    async checklmToken(telegram: Telegram) : Promise<boolean> {
+        if((!this.settings.failsafe || this.settings.failsafe <= 0) && (!this.settings.switchPoolInBlocks || this.settings.switchPoolInBlocks <= 0)){
+            return false
+        }
+        const balances = await this.getTokenBalances()
+        balances.forEach(element => {
+            if(element.isLPS) {
+                let newToken = element.symbol.replace("-DUSD", "")
+                if(this.settings.LMToken !== newToken) {
+                    this.changeToken(newToken,telegram)
+                } else {
+                    console.log("no LMToken change needed")
+                }
+            }
+        })
+        return true
+    }
 
     async doValidationChecks(telegram: Telegram): Promise<boolean> {
         if (!super.doValidationChecks(telegram)) {
@@ -96,6 +119,12 @@ export class VaultMaxiProgram extends CommonProgram {
         if (this.settings.maxCollateralRatio > 0 && this.settings.minCollateralRatio > this.settings.maxCollateralRatio - 2) {
             const message = "Min collateral must be more than 2 below max collateral. Please change your settings. "
                 + "thresholds " + this.settings.minCollateralRatio + " - " + this.settings.maxCollateralRatio
+            await telegram.send(message)
+            console.error(message)
+            return false
+        }
+        if(this.settings.failsafe! > 0 && this.settings.switchPoolInBlocks! > 0) {
+            const message = "not allowed to set both failsafe and switchPoolInBlocks > 0"
             await telegram.send(message)
             console.error(message)
             return false
@@ -168,6 +197,8 @@ export class VaultMaxiProgram extends CommonProgram {
         values.reinvest = this.settings.reinvestThreshold
         values.moveToAddress = this.settings.moveToAddress
         values.moveToTreshold = this.settings.moveToTreshold
+        values.switchPoolInBlocks = this.settings.switchPoolInBlocks
+        values.failsafe = this.settings.failsafe
 
         const message = values.constructMessage()
             + "\n" + (this.keepWalletClean ? "trying to keep the wallet clean" : "ignoring dust and commissions")
@@ -176,7 +207,49 @@ export class VaultMaxiProgram extends CommonProgram {
         console.log("using telegram for notification: " + telegram.token + " chatId: " + telegram.chatId)
         await telegram.send(message)
         await telegram.log("log channel active")
+        await this.testing(telegram)
+        return true
+    }
 
+    async testing(telegram: Telegram): Promise<boolean> {
+        console.log("Testing")
+        await this.checklmToken(telegram)
+
+        return true
+    }
+
+    async switchPool(vault: LoanVaultActive, telegram: Telegram): Promise<boolean> {
+        console.log("Pool: " + this.settings.LMToken)
+        let poolList = await this.getStockPools()
+        if(Array.isArray(poolList)) {
+            let sortedList = await this.sortStockPoolsByAPR(poolList)
+            let newLMToken = sortedList[0].tokenA.symbol
+            if(newLMToken === this.settings.LMToken) {
+                console.log("PoolSwitch: already best APR pool")
+                return false
+            } else {
+                await this.removeExposure(vault,telegram)
+                await this.updateToPoolState(newLMToken,VaultMaxiProgramTransaction.SwitchPool)
+                await this.changeToken(newLMToken, telegram)
+                vault = await this.getVault() as LoanVaultActive 
+                await this.increaseExposure(vault,telegram)
+                vault = await this.getVault() as LoanVaultActive
+                await this.cleanUp(vault,telegram)
+    
+                return true 
+            }
+        }
+        return false
+    }
+
+    async changeToken(token: string, telegram: Telegram): Promise<boolean> {
+        let oldLMToken = this.settings.LMToken
+        this.settings.LMToken = token
+        this.lmPair = this.settings.LMToken + "-DUSD"
+        await this.updateLMTokenStore(token)
+        console.log("new Token: " + this.settings.LMToken + "\n" + "lmPair " + this.lmPair)
+        await telegram.send("Change LMToken from " + oldLMToken + " to " + this.settings.LMToken)
+        //TODO change Token for telegramm Bot
         return true
     }
 
@@ -514,6 +587,17 @@ export class VaultMaxiProgram extends CommonProgram {
         }
     }
 
+    async checkPoolSwitch(): Promise<boolean> {
+        // console.log("Last switch Block: " + this.settings.poolInformation.blockHeight + " Switch: " + this.settings.switchPoolInBlocks)
+        if(!this.settings.switchPoolInBlocks || this.settings.switchPoolInBlocks === -1) {
+            return false
+        }
+        else if(this.settings.poolInformation.blockHeight + this.settings.switchPoolInBlocks <= await this.getBlockHeight()) {
+            return true
+        }
+        return false
+    }
+
     async updateToState(state: ProgramState, transaction: VaultMaxiProgramTransaction, txId: string = ""): Promise<void> {
         return await this.store.updateToState({
             state: state,
@@ -521,6 +605,19 @@ export class VaultMaxiProgram extends CommonProgram {
             txId: txId,
             blockHeight: await this.getBlockHeight()
         })
+    }
+
+    async updateToPoolState(pool: string, transaction: VaultMaxiProgramTransaction, txId: string = ""): Promise<void> {
+        return await this.store.updateToPoolState({
+            pool: pool,
+            blockHeight: await this.getBlockHeight(),
+            tx: transaction,
+            txId: txId
+        })
+    }
+
+    async updateLMTokenStore(LMToken: string): Promise<void> {
+        return await this.store.updateLMToken(LMToken)
     }
 
     private prevOutFromTx(tx: CTransactionSegWit): Prevout {
