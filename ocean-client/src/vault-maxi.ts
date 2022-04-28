@@ -159,6 +159,7 @@ export async function main(event: maxiEvent, context: any): Promise<Object> {
                     console.error(message)
                 }
                 else if(await program.checkPoolSwitch() === true){
+                    vault = await program.getVault() as LoanVaultActive
                     exposureChanged = await program.switchPool(vault, telegram)
                     vault = await program.getVault() as LoanVaultActive
                     result = true
