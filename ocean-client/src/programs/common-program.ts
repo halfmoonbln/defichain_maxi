@@ -95,7 +95,7 @@ export class CommonProgram {
 
     async sortStockPoolsByAPR(list : PoolPairData[]): Promise<PoolPairData[]> {
         return list.sort((a,b) => {
-            if(a.apr?.total && b.apr?.total)
+            if(a.apr?.total && b.apr?.total && a.apr?.reward > 0 && b.apr?.reward > 0)
                  return b.apr?.total - a.apr?.total
             else
                 return 0
